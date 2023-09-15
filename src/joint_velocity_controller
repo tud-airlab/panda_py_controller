@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+import numpy as np
+
+import panda_py
+from panda_py import controllers
+
+import rospy
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Float64MultiArray
+
+
+class JointVelocityController(object):
+    def __init__(self):
+        self.init_panda_interface()
+        rospy.init_node("JointVelocityController")
+        self._frequency = 500
+        self._rate = rospy.Rate(self._frequency)
+        self._joint_state_publisher = rospy.Publisher(
+            '/franka_state_controller/joint_states',
+            JointState,
+            queue_size=1,
+        )
+        self._desired_velocity_sub = rospy.Subscriber(
+            '/panda_joint_velocity_controller/command',
+            Float64MultiArray,
+            self.desired_velocity_cb,
+        )
+
+        self._desired_velocity = np.zeros(7)
+        self._joint_states = JointState()
+        self._joint_states.name = ['panda_joint' + str(i+1) for i in range(7)]
+
+    def init_panda_interface(self):
+        self._ip_address_panda = "172.16.0.2"
+        self._panda_interface = panda_py.Panda(self._ip_address_panda)
+        self._panda_interface.get_robot().set_collision_behavior(
+            np.array([20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0]) * 5,
+            np.array([20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0]) * 5,
+            np.array([10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]) * 5,
+            np.array([10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]) * 5,
+            np.array([20.0, 20.0, 20.0, 20.0, 20.0, 20.0]) * 5,
+            np.array([20.0, 20.0, 20.0, 20.0, 20.0, 20.0]) * 5,
+            np.array([10.0, 10.0, 10.0, 10.0, 10.0, 10.0]) * 5,
+            np.array([10.0, 10.0, 10.0, 10.0, 10.0, 10.0]) * 5
+        )
+        self._panda_interface.move_to_start()
+        self.init_controller()
+
+    def init_controller(self):
+        self.set_controller_parameters()
+        self._controller = controllers.JointVelocity(
+            stiffness=self._stiffness,
+            damping=self._damping,
+        )
+        self._controller.set_ki(self._k_i)
+        self._controller.set_vel_error_cum_max(self._vel_error_cum_max)
+        self._controller.set_vel_error_cum_min(self._vel_error_cum_min)
+        self._controller.set_filter(self._alpha)
+        self._panda_interface.start_controller(self._controller)
+
+    def set_controller_parameters(self):
+
+        self._stiffness = np.array([600., 600., 600., 600., 250., 150., 50.]) / 10
+        self._damping = np.array([50, 50, 50, 20, 20, 20, 10]) * 0.0
+        self._k_i = np.array([5, 5, 5, 2, 2, 2, 1]) * 0.5
+        self._alpha = 0.1
+        self._vel_error_cum_max = np.array([0.5, 0.5, 0.5, 0.2, 0.2, 0.2, 0.1]) * 3
+        self._vel_error_cum_min = -self._vel_error_cum_max
+
+
+    def desired_velocity_cb(self, data: Float64MultiArray):
+        self._desired_velocity = data.data
+
+    def publish_joint_states(self) -> None:
+        state = self._panda_interface.get_state()
+        self._joint_states.header.stamp = rospy.Time.now()
+        self._joint_states.position = state.q
+        self._joint_states.velocity = state.dq
+        self._joint_state_publisher.publish(self._joint_states)
+
+    def run(self):
+        #self._rate.sleep()
+        #while (not rospy.is_shutdown()) and ctx.ok():
+        with self._panda_interface.create_context(frequency=self._frequency, max_runtime=100) as ctx:
+            while ctx.ok():
+                self.publish_joint_states()
+                self._controller.set_control(self._desired_velocity)
+                #self._rate.sleep()
+
+def run_controller():
+    controller = JointVelocityController()
+    try:
+        controller.run()
+    except rospy.ROSInterruptException:
+        pass
+
+
+if __name__ == "__main__":
+    run_controller()
+
+        
+
